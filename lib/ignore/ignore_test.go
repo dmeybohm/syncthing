@@ -1345,3 +1345,51 @@ func TestWindowsLineEndings(t *testing.T) {
 		t.Error("expected there to be a non-zero number of Windows line endings")
 	}
 }
+
+func TestGitIgnorePatternsAreParsed(t *testing.T) {
+	testFS := newTestFS()
+	gitignore := []byte(`!file1
+file2
+file3
+ignored_by_git`)
+	stignore := []byte(`#include .gitignore
+!file3
+dir
+`)
+	if err := fs.WriteFile(testFS, ".gitignore", gitignore, 0o666); err != nil {
+		t.Error("Failed writing")
+		return
+	}
+	if err := fs.WriteFile(testFS, ".stignore", stignore, 0o666); err != nil {
+		t.Error("Failed writing")
+		return
+	}
+
+	ign := New(testFS)
+	if err := ign.Load(".stignore"); err != nil {
+		t.Error("Error loading .stignore")
+		return
+	}
+
+	if !ign.Match("dir").IsIgnored() {
+		t.Error("Dir is not ignored")
+	}
+	if !ign.Match("dir/file1").IsIgnored() {
+		t.Error("dir/file1 is not ignored")
+	}
+	if ign.Match("file1").IsIgnored() {
+		t.Error("file1 is ignored at root dir and shouldn't be")
+	}
+	if !ign.Match("ignored_by_git").IsIgnored() {
+		t.Error("ignored_by_git is not ignored at root dir and should be")
+	}
+	if ign.Match("dir/file3").IsIgnored() {
+		t.Error("dir/file3 is ignored and shouldn't be")
+	}
+	if !ign.Match("file2").IsIgnored() {
+		t.Error("file2 is not ignored")
+	}
+	if ign.Match("file3").IsIgnored() {
+		t.Error("file3 is ignored and shouldn't be")
+	}
+}
