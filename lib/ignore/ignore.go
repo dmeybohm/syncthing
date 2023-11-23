@@ -510,6 +510,8 @@ func parseLine(line string) ([]Pattern, error) {
 func parseIgnoreFile(fs fs.Filesystem, fd io.Reader, currentFile string, cd ChangeDetector, linesSeen map[string]struct{}) ([]string, []Pattern, error) {
 	var patterns []Pattern
 
+	isGitIgnore := strings.Contains(currentFile, ".gitignore")
+
 	addPattern := func(line string) error {
 		newPatterns, err := parseLine(line)
 		if err != nil {
@@ -543,6 +545,9 @@ func parseIgnoreFile(fs fs.Filesystem, fd io.Reader, currentFile string, cd Chan
 		}
 
 		line = filepath.ToSlash(line)
+		if isGitIgnore && len(line) > 0 && line[0] == '!' {
+			continue
+		}
 		switch {
 		case strings.HasPrefix(line, "#include"):
 			fields := strings.SplitN(line, " ", 2)
@@ -560,14 +565,7 @@ func parseIgnoreFile(fs fs.Filesystem, fd io.Reader, currentFile string, cd Chan
 			includeFile := filepath.Join(filepath.Dir(currentFile), includeRel)
 			var includePatterns []Pattern
 			if includePatterns, err = loadParseIncludeFile(fs, includeFile, cd, linesSeen); err == nil {
-				// If the filename included .gitignore, filter out the inverted patterns that start with '!'
-				// because the semantics are different.
-				isGitIgnore := strings.Contains(includeFile, ".gitignore")
-				for _, includePattern := range includePatterns {
-					if !isGitIgnore || (len(includePattern.pattern) > 0 && includePattern.pattern[0] != '!') {
-						patterns = append(patterns, includePattern)
-					}
-				}
+				patterns = append(patterns, includePatterns...)
 			} else {
 				// Wrap the error, as if the include does not exist, we get a
 				// IsNotExists(err) == true error, which we use to check
