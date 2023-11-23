@@ -1344,7 +1344,7 @@ func TestWindowsLineEndings(t *testing.T) {
 
 func TestBangPatternsInGitIgnoreAreFilteredOut(t *testing.T) {
 	testFS := newTestFS()
-	if err := fs.WriteFile(testFS, ".gitignore", []byte("!file\n"), 0o666); err != nil {
+	if err := fs.WriteFile(testFS, ".gitignore", []byte("!file\nignored_by_git"), 0o666); err != nil {
 		t.Error("Failed writing")
 		return
 	}
@@ -1368,5 +1368,7 @@ func TestBangPatternsInGitIgnoreAreFilteredOut(t *testing.T) {
 	if ign.Match("file").IsIgnored() {
 		t.Error("File is ignored at root dir and shouldn't be")
 	}
-
+	if !ign.Match("ignored_by_git").IsIgnored() {
+		t.Error("File is not ignored at root dir and should be")
+	}
 }
