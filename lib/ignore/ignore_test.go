@@ -1352,14 +1352,6 @@ func TestBangPatternsInGitIgnoreAreFilteredOut(t *testing.T) {
 		t.Error("Failed writing")
 		return
 	}
-	if err := testFS.Mkdir("dir", 0o777); err != nil {
-		t.Error("Failing Mkdir")
-		return
-	}
-	if err := fs.WriteFile(testFS, "file", []byte("1\n"), 0o666); err != nil {
-		t.Error("Failed writing file")
-		return
-	}
 
 	ign := New(testFS)
 	if err := ign.Load(".stignore"); err != nil {
@@ -1373,4 +1365,8 @@ func TestBangPatternsInGitIgnoreAreFilteredOut(t *testing.T) {
 	if !ign.Match("dir/file").IsIgnored() {
 		t.Error("File is not ignored")
 	}
+	if ign.Match("file").IsIgnored() {
+		t.Error("File is ignored at root dir and shouldn't be")
+	}
+
 }
