@@ -1341,3 +1341,36 @@ func TestWindowsLineEndings(t *testing.T) {
 		t.Error("expected there to be a non-zero number of Windows line endings")
 	}
 }
+
+func TestBangPatternsInGitIgnoreAreFilteredOut(t *testing.T) {
+	testFS := newTestFS()
+	if err := fs.WriteFile(testFS, ".gitignore", []byte("!file\n"), 0o666); err != nil {
+		t.Error("Failed writing")
+		return
+	}
+	if err := fs.WriteFile(testFS, ".stignore", []byte("#include .gitignore\ndir\n"), 0o666); err != nil {
+		t.Error("Failed writing")
+		return
+	}
+	if err := testFS.Mkdir("dir", 0o777); err != nil {
+		t.Error("Failing Mkdir")
+		return
+	}
+	if err := fs.WriteFile(testFS, "file", []byte("1\n"), 0o666); err != nil {
+		t.Error("Failed writing file")
+		return
+	}
+
+	ign := New(testFS)
+	if err := ign.Load(".stignore"); err != nil {
+		t.Error("Error loading .stignore")
+		return
+	}
+
+	if !ign.Match("dir").IsIgnored() {
+		t.Error("Dir is not ignored")
+	}
+	if !ign.Match("dir/file").IsIgnored() {
+		t.Error("File is not ignored")
+	}
+}
