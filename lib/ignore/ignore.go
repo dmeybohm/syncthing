@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gobwas/glob"
+	gitignore "github.com/sabhiram/go-gitignore"
 
 	"github.com/syncthing/syncthing/lib/build"
 	"github.com/syncthing/syncthing/lib/fs"
@@ -129,8 +130,9 @@ type ChangeDetector interface {
 
 type Matcher struct {
 	fs              fs.Filesystem
-	lines           []string  // exact lines read from .stignore
-	patterns        []Pattern // patterns including those from included files
+	lines           []string             // exact lines read from .stignore
+	patterns        []Pattern            // patterns including those from included files
+	gitignore       *gitignore.GitIgnore // gitignore patterns
 	withCache       bool
 	matches         *cache
 	curHash         string
@@ -215,11 +217,12 @@ func (m *Matcher) Parse(r io.Reader, file string) error {
 }
 
 func (m *Matcher) parseLocked(r io.Reader, file string) error {
-	lines, patterns, err := parseIgnoreFile(m.fs, r, file, m.changeDetector, make(map[string]struct{}))
+	lines, patterns, gitPatterns, err := parseIgnoreFile(m.fs, r, file, m.changeDetector, make(map[string]struct{}))
 	// Error is saved and returned at the end. We process the patterns
 	// (possibly blank) anyway.
 
 	m.lines = lines
+	m.gitignore = gitPatterns
 
 	newHash := hashPatterns(patterns)
 	if newHash == m.curHash {
@@ -261,7 +264,7 @@ func (m *Matcher) Match(file string) (result Result) {
 	m.mut.Lock()
 	defer m.mut.Unlock()
 
-	if len(m.patterns) == 0 {
+	if len(m.patterns) == 0 && m.gitignore == nil {
 		return resultNotMatched
 	}
 
@@ -280,6 +283,26 @@ func (m *Matcher) Match(file string) (result Result) {
 
 	// Check all the patterns for a match.
 	file = filepath.ToSlash(file)
+
+	var ignoredByGitIgnore = false
+	if m.gitignore != nil && m.gitignore.MatchesPath(file) {
+		ignoredByGitIgnore = true
+	}
+	syncthingIgnoreResult, matchedBySyncthingIgnore := m.matchSyncthingPattern(file)
+
+	if ignoredByGitIgnore {
+		// Ignore unless syncthing ignore says to not ignore
+		if matchedBySyncthingIgnore {
+			return syncthingIgnoreResult
+		} else {
+			return resultInclude
+		}
+	} else {
+		return syncthingIgnoreResult
+	}
+}
+
+func (m *Matcher) matchSyncthingPattern(file string) (result Result, matched bool) {
 	var lowercaseFile string
 	for _, pattern := range m.patterns {
 		if pattern.result.IsCaseFolded() {
@@ -287,15 +310,13 @@ func (m *Matcher) Match(file string) (result Result) {
 				lowercaseFile = strings.ToLower(file)
 			}
 			if pattern.match.Match(lowercaseFile) {
-				return pattern.result
+				return pattern.result, true
 			}
 		} else if pattern.match.Match(file) {
-			return pattern.result
+			return pattern.result, true
 		}
 	}
-
-	// Default to not matching.
-	return resultNotMatched
+	return resultNotMatched, false
 }
 
 // Lines return a list of the unprocessed lines in .stignore at last load
@@ -393,7 +414,11 @@ func loadIgnoreFile(fs fs.Filesystem, file string) (fs.File, fs.FileInfo, error)
 	return fd, info, err
 }
 
-func loadParseIncludeFile(filesystem fs.Filesystem, file string, cd ChangeDetector, linesSeen map[string]struct{}) ([]Pattern, error) {
+func loadParseIncludeFile(
+	filesystem fs.Filesystem,
+	file string,
+	cd ChangeDetector,
+	linesSeen map[string]struct{}) ([]Pattern, *gitignore.GitIgnore, error) {
 	// Allow escaping the folders filesystem.
 	// TODO: Deprecate, somehow?
 	if filesystem.Type() == fs.FilesystemTypeBasic {
@@ -406,7 +431,7 @@ func loadParseIncludeFile(filesystem fs.Filesystem, file string, cd ChangeDetect
 	}
 
 	if cd.Seen(filesystem, file) {
-		return nil, errors.New("multiple include")
+		return nil, nil, errors.New("multiple include")
 	}
 
 	fd, info, err := loadIgnoreFile(filesystem, file)
@@ -419,14 +444,14 @@ func loadParseIncludeFile(filesystem fs.Filesystem, file string, cd ChangeDetect
 		if fs.IsNotExist(err) {
 			err = errors.New("file not found")
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	defer fd.Close()
 
 	cd.Remember(filesystem, file, info.ModTime())
 
-	_, patterns, err := parseIgnoreFile(filesystem, fd, file, cd, linesSeen)
-	return patterns, err
+	_, patterns, gitpatterns, err := parseIgnoreFile(filesystem, fd, file, cd, linesSeen)
+	return patterns, gitpatterns, err
 }
 
 func parseLine(line string) ([]Pattern, error) {
@@ -507,10 +532,34 @@ func parseLine(line string) ([]Pattern, error) {
 	return patterns, nil
 }
 
-func parseIgnoreFile(fs fs.Filesystem, fd io.Reader, currentFile string, cd ChangeDetector, linesSeen map[string]struct{}) ([]string, []Pattern, error) {
-	var patterns []Pattern
+// loadGitIgnoreFile uses an ignore file as the input, parses the lines out of
+// the file and invokes the gitignore.CompileIgnoreLines method.
+func loadGitIgnoreFile(fs fs.Filesystem, fpath string) (*gitignore.GitIgnore, error) {
+	fd, err := fs.Open(fpath)
+	if err != nil {
+		return nil, err
+	}
+	scanner := bufio.NewScanner(fd)
+	var lines []string
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 
-	isGitIgnore := strings.Contains(currentFile, ".gitignore")
+	return gitignore.CompileIgnoreLines(lines...), nil
+}
+
+func parseIgnoreFile(
+	fs fs.Filesystem,
+	fd io.Reader,
+	currentFile string,
+	cd ChangeDetector,
+	linesSeen map[string]struct{}) ([]string, []Pattern, *gitignore.GitIgnore, error) {
+	var patterns []Pattern
+	var gitPatterns *gitignore.GitIgnore
 
 	addPattern := func(line string) error {
 		newPatterns, err := parseLine(line)
@@ -528,7 +577,7 @@ func parseIgnoreFile(fs fs.Filesystem, fd io.Reader, currentFile string, cd Chan
 		lines = append(lines, line)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var err error
@@ -545,9 +594,6 @@ func parseIgnoreFile(fs fs.Filesystem, fd io.Reader, currentFile string, cd Chan
 		}
 
 		line = filepath.ToSlash(line)
-		if isGitIgnore && len(line) > 0 && line[0] == '!' {
-			continue
-		}
 		switch {
 		case strings.HasPrefix(line, "#include"):
 			fields := strings.SplitN(line, " ", 2)
@@ -564,14 +610,29 @@ func parseIgnoreFile(fs fs.Filesystem, fd io.Reader, currentFile string, cd Chan
 
 			includeFile := filepath.Join(filepath.Dir(currentFile), includeRel)
 			var includePatterns []Pattern
-			if includePatterns, err = loadParseIncludeFile(fs, includeFile, cd, linesSeen); err == nil {
-				patterns = append(patterns, includePatterns...)
+			var includeGit *gitignore.GitIgnore
+			isGitIgnore := strings.Contains(includeFile, ".gitignore")
+			if isGitIgnore {
+				if includeGit, err = loadGitIgnoreFile(fs, includeFile); err == nil {
+					gitPatterns = includeGit
+				}
 			} else {
-				// Wrap the error, as if the include does not exist, we get a
-				// IsNotExists(err) == true error, which we use to check
-				// existence of the .stignore file, and just end up assuming
-				// there is none, rather than a broken include.
-				err = parseError(fmt.Errorf("failed to load include file %s: %w", includeFile, err))
+				if includePatterns, includeGit, err = loadParseIncludeFile(fs, includeFile, cd, linesSeen); err == nil {
+					// If the filename included .gitignore, filter out the inverted patterns that start with '!'
+					// because the semantics are different.
+					for _, includePattern := range includePatterns {
+						patterns = append(patterns, includePattern)
+					}
+					if includeGit != nil {
+						gitPatterns = includeGit
+					}
+				} else {
+					// Wrap the error, as if the include does not exist, we get a
+					// IsNotExists(err) == true error, which we use to check
+					// existence of the .stignore file, and just end up assuming
+					// there is none, rather than a broken include.
+					err = parseError(fmt.Errorf("failed to load include file %s: %w", includeFile, err))
+				}
 			}
 		case strings.HasSuffix(line, "/**"):
 			err = addPattern(line)
@@ -584,11 +645,11 @@ func parseIgnoreFile(fs fs.Filesystem, fd io.Reader, currentFile string, cd Chan
 			}
 		}
 		if err != nil {
-			return lines, nil, err
+			return lines, nil, nil, err
 		}
 	}
 
-	return lines, patterns, nil
+	return lines, patterns, gitPatterns, nil
 }
 
 // WriteIgnores is a convenience function to avoid code duplication
