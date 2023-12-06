@@ -264,7 +264,7 @@ func (m *Matcher) Match(file string) (result Result) {
 	m.mut.Lock()
 	defer m.mut.Unlock()
 
-	if len(m.patterns) == 0 {
+	if len(m.patterns) == 0 && m.gitignore == nil {
 		return resultNotMatched
 	}
 
@@ -281,19 +281,28 @@ func (m *Matcher) Match(file string) (result Result) {
 		}()
 	}
 
-	if m.gitignore != nil && m.gitignore.MatchesPath(file) {
-		for _, pattern := range m.patterns {
-			if strings.HasPrefix(pattern.pattern, "!") {
-				if pattern.match.Match(file) {
-					return resultNotMatched
-				}
-			}
-		}
-		return resultInclude
-	}
-
 	// Check all the patterns for a match.
 	file = filepath.ToSlash(file)
+
+	var ignoredByGitIgnore = false
+	if m.gitignore != nil && m.gitignore.MatchesPath(file) {
+		ignoredByGitIgnore = true
+	}
+	syncthingIgnoreResult, matchedBySyncthingIgnore := m.matchSyncthingPattern(file)
+
+	if ignoredByGitIgnore {
+		// Ignore unless syncthing ignore says to not ignore
+		if matchedBySyncthingIgnore {
+			return syncthingIgnoreResult
+		} else {
+			return resultInclude
+		}
+	} else {
+		return syncthingIgnoreResult
+	}
+}
+
+func (m *Matcher) matchSyncthingPattern(file string) (result Result, matched bool) {
 	var lowercaseFile string
 	for _, pattern := range m.patterns {
 		if pattern.result.IsCaseFolded() {
@@ -301,15 +310,13 @@ func (m *Matcher) Match(file string) (result Result) {
 				lowercaseFile = strings.ToLower(file)
 			}
 			if pattern.match.Match(lowercaseFile) {
-				return pattern.result
+				return pattern.result, true
 			}
 		} else if pattern.match.Match(file) {
-			return pattern.result
+			return pattern.result, true
 		}
 	}
-
-	// Default to not matching.
-	return resultNotMatched
+	return resultNotMatched, false
 }
 
 // Lines return a list of the unprocessed lines in .stignore at last load
@@ -525,6 +532,26 @@ func parseLine(line string) ([]Pattern, error) {
 	return patterns, nil
 }
 
+// loadGitIgnoreFile uses an ignore file as the input, parses the lines out of
+// the file and invokes the gitignore.CompileIgnoreLines method.
+func loadGitIgnoreFile(fs fs.Filesystem, fpath string) (*gitignore.GitIgnore, error) {
+	fd, err := fs.Open(fpath)
+	if err != nil {
+		return nil, err
+	}
+	scanner := bufio.NewScanner(fd)
+	var lines []string
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return gitignore.CompileIgnoreLines(lines...), nil
+}
+
 func parseIgnoreFile(
 	fs fs.Filesystem,
 	fd io.Reader,
@@ -533,8 +560,6 @@ func parseIgnoreFile(
 	linesSeen map[string]struct{}) ([]string, []Pattern, *gitignore.GitIgnore, error) {
 	var patterns []Pattern
 	var gitPatterns *gitignore.GitIgnore
-
-	isGitIgnore := strings.Contains(currentFile, ".gitignore")
 
 	addPattern := func(line string) error {
 		newPatterns, err := parseLine(line)
@@ -588,7 +613,7 @@ func parseIgnoreFile(
 			var includeGit *gitignore.GitIgnore
 			isGitIgnore := strings.Contains(includeFile, ".gitignore")
 			if isGitIgnore {
-				if includeGit, err = gitignore.CompileIgnoreFile(includeFile); err == nil {
+				if includeGit, err = loadGitIgnoreFile(fs, includeFile); err == nil {
 					gitPatterns = includeGit
 				}
 			} else {
