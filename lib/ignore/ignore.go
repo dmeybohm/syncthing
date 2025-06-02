@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"github.com/gobwas/glob"
-	"golang.org/x/text/unicode/norm"
 	gitignore "github.com/sabhiram/go-gitignore"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/syncthing/syncthing/lib/build"
 	"github.com/syncthing/syncthing/lib/fs"
@@ -109,9 +109,9 @@ type ChangeDetector interface {
 
 type Matcher struct {
 	fs             fs.Filesystem
-	lines          []string  // exact lines read from .stignore
-	patterns       []Pattern // patterns including those from included files
-	gitignore       *gitignore.GitIgnore // gitignore patterns
+	lines          []string             // exact lines read from .stignore
+	patterns       []Pattern            // patterns including those from included files
+	gitignore      *gitignore.GitIgnore // gitignore patterns
 	withCache      bool
 	matches        *cache
 	curHash        string
@@ -274,14 +274,14 @@ func (m *Matcher) Match(file string) (result ignoreresult.R) {
 		if matchedBySyncthingIgnore {
 			return syncthingIgnoreResult
 		} else {
-			return resultInclude
+			return ignoreresult.NotIgnored
 		}
 	} else {
 		return syncthingIgnoreResult
 	}
 }
 
-func (m *Matcher) matchSyncthingPattern(file string) (result Result, matched bool) {
+func (m *Matcher) matchSyncthingPattern(file string) (result ignoreresult.R, matched bool) {
 	var lowercaseFile string
 	canSkipDir := true
 	for _, pattern := range m.patterns {
@@ -306,7 +306,7 @@ func (m *Matcher) matchSyncthingPattern(file string) (result Result, matched boo
 	}
 
 	// Default to not matching.
-	return resultNotMatched, false
+	return ignoreresult.NotIgnored, false
 }
 
 // Lines return a list of the unprocessed lines in .stignore at last load
