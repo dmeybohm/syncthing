@@ -274,7 +274,7 @@ func (m *Matcher) Match(file string) (result ignoreresult.R) {
 		if matchedBySyncthingIgnore {
 			return syncthingIgnoreResult
 		} else {
-			return ignoreresult.NotIgnored
+			return ignoreresult.Ignored
 		}
 	} else {
 		return syncthingIgnoreResult
