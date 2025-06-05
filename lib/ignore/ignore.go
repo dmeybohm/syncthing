@@ -243,30 +243,7 @@ func (m *Matcher) Match(file string) (result ignoreresult.R) {
 
 	file = filepath.ToSlash(file)
 
-	if m.matches != nil {
-		// Check the cache for a known result.
-		res, ok := m.matches.get(file)
-		if ok {
-			return res
-		}
-
-		// Update the cache with the result at return time
-		defer func() {
-			m.matches.set(file, result)
-		}()
-	}
-
-	// Check all the patterns for a match. Track whether the patterns so far
-	// allow skipping matched directories or not. As soon as we hit an
-	// exclude pattern (with some exceptions), we can't skip directories
-	// anymore.
-	// Check all the patterns for a match.
-	file = filepath.ToSlash(file)
-
-	var ignoredByGitIgnore = false
-	if m.gitignore != nil && m.gitignore.MatchesPath(file) {
-		ignoredByGitIgnore = true
-	}
+	var ignoredByGitIgnore = m.matchGitignorePattern(file)
 	syncthingIgnoreResult, matchedBySyncthingIgnore := m.matchSyncthingPattern(file)
 
 	if ignoredByGitIgnore {
@@ -281,7 +258,28 @@ func (m *Matcher) Match(file string) (result ignoreresult.R) {
 	}
 }
 
+func (m *Matcher) matchGitignorePattern(file string) bool {
+	if m.gitignore != nil && m.gitignore.MatchesPath(file) {
+		return true
+	} else {
+		return false
+	}
+}
+
 func (m *Matcher) matchSyncthingPattern(file string) (result ignoreresult.R, matched bool) {
+	if m.matches != nil {
+		// Check the cache for a known result.
+		res, ok := m.matches.get(file)
+		if ok {
+			return res, true
+		}
+
+		// Update the cache with the result at return time
+		defer func() {
+			m.matches.set(file, result)
+		}()
+	}
+
 	var lowercaseFile string
 	canSkipDir := true
 	for _, pattern := range m.patterns {
@@ -298,10 +296,10 @@ func (m *Matcher) matchSyncthingPattern(file string) (result ignoreresult.R, mat
 				lowercaseFile = strings.ToLower(file)
 			}
 			if pattern.match.Match(lowercaseFile) {
-				return pattern.result, true
+				return res, true
 			}
 		} else if pattern.match.Match(file) {
-			return pattern.result, true
+			return res, true
 		}
 	}
 
